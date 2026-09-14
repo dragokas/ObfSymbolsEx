@@ -1,6 +1,6 @@
 # ObfSymbolsEx
 
-A comprehensive toolset for extracting function symbols from PDB (Program Database) files without requiring COM registration.
+A tool for extracting function symbols from PDB (Program Database) files without requiring COM registration.
 
 > **ObfSymbolsEx** is an extended version of the original [ObfSymbols](https://github.com/chrisnas/VibeCoding/tree/main/ObfSymbols) utility by Christophe Nasarre ([@chrisnas](https://github.com/chrisnas)) — see the original article, [*"Vibe coding a PDB dumper, or how I became a product manager"*](https://chnasarre.medium.com/vibe-coding-a-pdb-dumper-or-how-i-became-a-product-manager-f957106a3e9f).
 
@@ -33,7 +33,22 @@ This solution contains three projects:
 - ✅ **Easy Distribution** - Just two files: `ObfSymbolsEx.exe` + `msdia140.dll`
 - ✅ **Full Validation** - Includes extensive test application with 460+ test symbols
 
+### Output Files
+
+Given `ObfSymbolsEx.exe server.pdb server.sym`, six files are written next to `server.sym`:
+
+| File | Purpose |
+|---|---|
+| `server.sym` | Mapping file — real names, signatures, return types, source file:line |
+| `server_obfuscated.sym` | Same symbols, real name/signature/source file stripped — safe to redistribute |
+| `server_vtable.sym` | Raw per-vtable slot dump (mapping names), including unresolved/unknown slots |
+| `server_vtable_obfuscated.sym` | Same vtable dump, obfuscated names only |
+| `server_vtable_classes.sym` | Per-class resolved virtual-method table (only known slots, one block per class) |
+| `server_vtable_inheritance.sym` | Per-class base-class tree, no vtable data |
+
 ### Output Format
+
+**server.sym**
 
 ```
 PUBLIC 0x1200 SIZE=88 obf_1561179B __thiscall Calculator::Add(double, double) -> double IS_VIRTUAL=0 VTABLE_OFFSET=-1 VTABLE_INDEX=-1 VTABLE_CLASS= VTABLE_INTRO=0 VTABLE_SHAPE=0 VTABLE_SLOTS=0 THIS_ADJUST=0 KIND=FUNCTION THUNK=0 THUNK_ORDINAL=0 THUNK_TARGET_RVA=0x0 SOURCE_FILE=Calculator.cpp:42
@@ -63,18 +78,48 @@ obfuscated-only file plus three VTable-reconstruction files (five files per
 run) — see `ObfSymbolsEx/DUAL_OUTPUT_FILES.md` and
 `ObfSymbolsEx/VTABLE_RECONSTRUCTION.md`.
 
-### Output Files
+**server_vtable.sym**
 
-Given `ObfSymbolsEx.exe server.pdb server.sym`, six files are written next to `server.sym`:
+```
+CLASS=CBaseEntity CLASS_ID=456 SHAPE=789 SLOTS=87 VTABLE_SOURCE=DIA_VTABLE ID=123 RVA=0x107DFD28
+SLOT=26 OFFSET=0x68 RVA=0x1034D3E0 SIZE=123 OBFUSCATED=obf_1561179B MATCH=CLASS_SHAPE KIND=FUNCTION THUNK=0 THUNK_ORDINAL=0 THUNK_TARGET_RVA=0x0 THIS_ADJUST=0 __thiscall METHOD=SetModel(char const*) METHOD_RETURN_TYPE=void METHOD_CLASS=CBaseEntity SOURCE_FILE=baseentity.cpp:1902
+SLOT=41 OFFSET=0xA8 RVA=-1 SIZE=-1 OBFUSCATED=- MATCH=NONE METHOD=UNKNOWN
+```
 
-| File | Purpose |
-|---|---|
-| `server.sym` | Mapping file — real names, signatures, return types, source file:line |
-| `server_obfuscated.sym` | Same symbols, real name/signature/source file stripped — safe to redistribute |
-| `server_vtable.sym` | Raw per-vtable slot dump (mapping names), including unresolved/unknown slots |
-| `server_vtable_obfuscated.sym` | Same vtable dump, obfuscated names only |
-| `server_vtable_classes.sym` | Per-class resolved virtual-method table (only known slots, one block per class) |
-| `server_vtable_inheritance.sym` | Per-class base-class tree, no vtable data |
+One `CLASS=...` header per vtable, then one `SLOT=` line per entry. Same
+per-method fields as `server.sym` above (`OBFUSCATED`, calling convention,
+`METHOD` name+signature, `METHOD_RETURN_TYPE`, `SOURCE_FILE`, ...), plus
+`OFFSET` (byte offset into the vtable) and `MATCH` (how the slot was
+resolved — `CLASS_SHAPE` or `NONE`); an unresolved slot prints
+`RVA=-1`/`METHOD=UNKNOWN` instead of being omitted.
+
+**server_vtable_classes.sym**
+
+```
+CLASS CBaseEntity CLASS_ID=456 VTABLE_SLOTS=87
+  [0] RVA=0x1034A100 __thiscall CBaseEntity::~CBaseEntity() -> void SHAPE=789 INTRO=1 THIS_ADJUST=0 KIND=DESTRUCTOR SOURCE_FILE=baseentity.cpp:1780
+  [26] RVA=0x1034D3E0 __thiscall CBaseEntity::SetModel(char const*) -> void SHAPE=789 INTRO=0 THIS_ADJUST=0 KIND=FUNCTION SOURCE_FILE=baseentity.cpp:1902
+```
+
+Same idea, but only the slots DIA could actually resolve for that class (no
+`UNKNOWN` rows), indexed by `[slot]` instead of address. `INTRO=1` marks the
+class that first declares that slot; `SHAPE`/`THIS_ADJUST` mirror the
+mapping file's `VTABLE_SHAPE`/`THIS_ADJUST`.
+
+**server_vtable_inheritance.sym**
+
+```
+CLASS CAI_SpeechFilter CLASS_ID=3213
+  +-- CBaseEntity
+  |   `-- IServerEntity
+  |       `-- IServerUnknown
+  |           `-- IHandleEntity
+  `-- IEntityListener
+```
+
+No vtable/method data — just each class's base-class chain as an ASCII
+tree, handy for spotting which ancestor introduces a slot seen in the two
+files above.
 
 ## Quick Start
 
