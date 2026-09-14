@@ -1,15 +1,18 @@
 # Unit Tests
 
-`unit-tests.ps1` (repo root) is a real pass/fail regression suite for every
-feature ObfSymbolsEx adds on top of the original ObfSymbols. Unlike
-`validate.ps1` (a build-and-eyeball smoke test that only checks substring
-containment and never fails on a missing symbol), every check here extracts
-a specific field from real `.sym` output and asserts its exact value —
-return types, calling convention, complex/basic type detection, source
-file+line, destructor/pure-virtual override resolution, the VTable dump on
-a multiple-inheritance hierarchy, the ICF fix, direct `.exe`/`.dll` input,
-and column-aligned/dual-output-file formatting — and the script exits
-non-zero if any assertion fails, so it is safe to wire into CI.
+Quick guide to the two test scripts in this repo and what `unit-tests.ps1`
+actually checks.
+
+## `validate.ps1` vs `unit-tests.ps1`
+
+| | `validate.ps1` | `unit-tests.ps1` |
+|---|---|---|
+| What it checks | Does a name like `MathOperations` appear *anywhere* in the output? (substring containment) | Does `Rectangle::Area` resolve to the *exact same* `VTABLE_INDEX` as `Shape::Area`? (exact field value) |
+| Pass/fail | Never fails — prints results for a human to eyeball | Exits non-zero if any assertion fails — safe for CI |
+| Use it for | A quick "did the build work" sanity check | Actually verifying a change didn't break a feature |
+
+Both build `ObfSymbolsEx` + `TestApp` + `TestDLL` and extract real `.sym`
+output first — `unit-tests.ps1` just checks that output far more strictly.
 
 ## Running
 
@@ -17,11 +20,11 @@ non-zero if any assertion fails, so it is safe to wire into CI.
 .\unit-tests.ps1
 ```
 
-This builds `ObfSymbolsEx` (Release x64), `TestApp` and `TestDLL` (Debug
-x64, plus a Release x64 build of `TestDLL` specifically for the ICF check),
-extracts symbols into `UnitTestResults\`, and runs ~43 assertions. Pass
-`-SkipBuild` to re-run against already-built artifacts (fast iteration
-while only editing the test script itself).
+Builds `ObfSymbolsEx` (Release x64), `TestApp`/`TestDLL` (Debug x64, plus a
+Release x64 build of `TestDLL` specifically for the ICF check), extracts
+symbols into `UnitTestResults\`, and runs ~43 assertions. Pass `-SkipBuild`
+to re-run against already-built artifacts (fast iteration while only
+editing the test script itself).
 
 ## Why Debug *and* Release
 
