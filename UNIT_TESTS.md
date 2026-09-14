@@ -1,18 +1,6 @@
 # Unit Tests
 
-Quick guide to the two test scripts in this repo and what `unit-tests.ps1`
-actually checks.
-
-## `validate.ps1` vs `unit-tests.ps1`
-
-| | `validate.ps1` | `unit-tests.ps1` |
-|---|---|---|
-| What it checks | Does a name like `MathOperations` appear *anywhere* in the output? (substring containment) | Does `Rectangle::Area` resolve to the *exact same* `VTABLE_INDEX` as `Shape::Area`? (exact field value) |
-| Pass/fail | Never fails — prints results for a human to eyeball | Exits non-zero if any assertion fails — safe for CI |
-| Use it for | A quick "did the build work" sanity check | Actually verifying a change didn't break a feature |
-
-Both build `ObfSymbolsEx` + `TestApp` + `TestDLL` and extract real `.sym`
-output first — `unit-tests.ps1` just checks that output far more strictly.
+What `unit-tests.ps1` checks, and how to run it.
 
 ## Running
 
@@ -20,11 +8,20 @@ output first — `unit-tests.ps1` just checks that output far more strictly.
 .\unit-tests.ps1
 ```
 
-Builds `ObfSymbolsEx` (Release x64), `TestApp`/`TestDLL` (Debug x64, plus a
-Release x64 build of `TestDLL` specifically for the ICF check), extracts
-symbols into `UnitTestResults\`, and runs ~43 assertions. Pass `-SkipBuild`
-to re-run against already-built artifacts (fast iteration while only
-editing the test script itself).
+This builds `ObfSymbolsEx` (Release x64), `TestApp`/`TestDLL` (Debug x64,
+plus a Release x64 build of `TestDLL` specifically for the ICF check),
+extracts symbols into `UnitTestResults\`, and runs ~43 assertions — each one
+checks an exact field value in the real `.sym` output (e.g. "does
+`Rectangle::Area` resolve to the same `VTABLE_INDEX` as `Shape::Area`?"),
+and the script exits non-zero if any of them fail. Run this whenever you
+change extraction logic, to confirm nothing broke.
+
+Pass `-SkipBuild` to re-run against already-built artifacts (fast iteration
+while only editing the test script itself).
+
+If you just want a quick eyeball after a build rather than a real
+pass/fail check, `.\validate.ps1` (repo root) does that instead — it prints
+a sample of the extracted symbols but doesn't assert anything.
 
 ## Why Debug *and* Release
 
