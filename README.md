@@ -2,6 +2,25 @@
 
 A tool for extracting function symbols from PDB (Program Database) files without requiring COM registration.
 
+## Quick Start
+
+### Building ObfSymbolsEx only
+```
+.\ObfSymbolsEx\build.bat
+```
+
+### Using ObfSymbolsEx
+
+```powershell
+.\ObfSymbolsEx\x64\Release\ObfSymbolsEx.exe input.pdb output.sym
+```
+
+The input can also be the built `.exe`/`.dll` itself instead of its `.pdb`
+— ObfSymbolsEx decides which by extension, and for a binary path lets DIA
+locate the matching PDB itself.
+
+# ObfSymbolsEx vs ObfSymbols
+
 > **ObfSymbolsEx** is an extended version of the original [ObfSymbols](https://github.com/chrisnas/VibeCoding/tree/main/ObfSymbols) utility by Christophe Nasarre ([@chrisnas](https://github.com/chrisnas)) — see the original article, [*"Vibe coding a PDB dumper, or how I became a product manager"*](https://chnasarre.medium.com/vibe-coding-a-pdb-dumper-or-how-i-became-a-product-manager-f957106a3e9f).
 
 **Added in this fork:**
@@ -121,9 +140,7 @@ No vtable/method data — just each class's base-class chain as an ASCII
 tree, handy for spotting which ancestor introduces a slot seen in the two
 files above.
 
-## Quick Start
-
-### Building Everything
+### Building everything
 
 **Option 1: Build entire solution**
 ```powershell
@@ -138,50 +155,11 @@ cd ..\TestApp
 .\build.ps1
 ```
 
-### Using ObfSymbolsEx
-
-```powershell
-.\ObfSymbolsEx\x64\Release\ObfSymbolsEx.exe input.pdb output.sym
-```
-
-The input can also be the built `.exe`/`.dll` itself instead of its `.pdb`
-— ObfSymbolsEx decides which by extension, and for a binary path lets DIA
-locate the matching PDB itself.
-
 ### Testing & Validation
 
-The solution includes comprehensive validation that tests both EXE and DLL symbol extraction:
+The solution includes comprehensive validation that tests both EXE and DLL symbol extraction.
 
-```powershell
-# Build all projects and validate both DLL and EXE symbol extraction
-.\validate.ps1
-```
-
-This will:
-- Build ObfSymbolsEx, TestDLL, and TestApp
-- Extract symbols from TestDLL.pdb (227 symbols)
-- Extract symbols from TestApp.pdb (460 symbols)
-- Verify all expected symbols are present
-- Display detailed analysis
-
-**Unit Tests:** `.\unit-tests.ps1` is a real pass/fail regression suite (as
-opposed to `validate.ps1`'s smoke test above) — see [UNIT_TESTS.md](UNIT_TESTS.md).
-
-**Manual Testing:**
-```powershell
-# Build all projects
-.\build-all.ps1
-
-# Extract DLL symbols
-.\x64\Release\ObfSymbolsEx.exe .\x64\Release\TestDLL.pdb TestDLL.sym
-
-# Extract EXE symbols  
-.\x64\Release\ObfSymbolsEx.exe .\x64\Release\TestApp.pdb TestApp.sym
-
-# View results
-Get-Content TestDLL.sym
-Get-Content TestApp.sym
-```
+See details in: [UNIT_TESTS.md](UNIT_TESTS.md)
 
 ## Project Structure
 
@@ -221,13 +199,13 @@ ObfSymbols/
 ## Requirements
 
 ### For Building
-- Windows operating system
-- Visual Studio 2022 or later
+- Windows 10 or newer
+- Visual Studio 2022 or newer
 - Windows SDK with DIA SDK support
 - C++20 compiler support
 
 ### For Running
-- Windows operating system
+- Windows 10 or newer
 - `msdia140.dll` (automatically copied during build)
 
 **No Visual Studio or registration required on target machines!**
@@ -270,15 +248,6 @@ To distribute ObfSymbolsEx:
    - `x64\Release\msdia140.dll`
 
 That's it! No installation, no registration, no dependencies.
-
-## Test Projects - Validation Suite
-
-`TestApp` (EXE, 460+ symbols) and `TestDLL` (DLL, 227+ symbols) between them
-cover overloads, statics, virtuals/inheritance, templates, namespaces,
-operators, and complex parameter types — see [TestApp/README.md](TestApp/README.md)
-and [TestDLL/README.md](TestDLL/README.md) for the full breakdown.
-`.\validate.ps1` extracts and eyeballs symbols from both; `.\unit-tests.ps1`
-asserts exact field values against them (see [UNIT_TESTS.md](UNIT_TESTS.md)).
 
 ## Usage Examples
 
@@ -366,5 +335,5 @@ This project is for internal use.
 
 ## Authors
 
-Base tool created as part of Datadog R&D Week 2025 (original [ObfSymbols](https://github.com/chrisnas/VibeCoding/tree/main/ObfSymbols) by Christophe Nasarre).
 ObfSymbolsEx is created by Dragokas & AI.
+It is based on tool created as part of Datadog R&D Week 2025 (original [ObfSymbols](https://github.com/chrisnas/VibeCoding/tree/main/ObfSymbols) by Christophe Nasarre).
