@@ -63,6 +63,19 @@ obfuscated-only file plus three VTable-reconstruction files (five files per
 run) — see `ObfSymbolsEx/DUAL_OUTPUT_FILES.md` and
 `ObfSymbolsEx/VTABLE_RECONSTRUCTION.md`.
 
+### Output Files
+
+Given `ObfSymbolsEx.exe server.pdb server.sym`, six files are written next to `server.sym`:
+
+| File | Purpose |
+|---|---|
+| `server.sym` | Mapping file — real names, signatures, return types, source file:line |
+| `server_obfuscated.sym` | Same symbols, real name/signature/source file stripped — safe to redistribute |
+| `server_vtable.sym` | Raw per-vtable slot dump (mapping names), including unresolved/unknown slots |
+| `server_vtable_obfuscated.sym` | Same vtable dump, obfuscated names only |
+| `server_vtable_classes.sym` | Per-class resolved virtual-method table (only known slots, one block per class) |
+| `server_vtable_inheritance.sym` | Per-class base-class tree, no vtable data |
+
 ## Quick Start
 
 ### Building Everything
