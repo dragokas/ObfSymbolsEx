@@ -31,7 +31,7 @@ This solution contains three projects:
 - ✅ **Portable** - Works without Visual Studio on target machines
 - ✅ **Comprehensive Output** - Lists function symbols with PUBLIC/PRIVATE, address, size, and name
 - ✅ **Easy Distribution** - Just two files: `ObfSymbolsEx.exe` + `msdia140.dll`
-- ✅ **Full Validation** - Includes extensive test application with 435+ test symbols
+- ✅ **Full Validation** - Includes extensive test application with 460+ test symbols
 
 ### Output Format
 
@@ -114,24 +114,13 @@ The solution includes comprehensive validation that tests both EXE and DLL symbo
 
 This will:
 - Build ObfSymbolsEx, TestDLL, and TestApp
-- Extract symbols from TestDLL.pdb (217 symbols)
-- Extract symbols from TestApp.pdb (435 symbols)
+- Extract symbols from TestDLL.pdb (227 symbols)
+- Extract symbols from TestApp.pdb (460 symbols)
 - Verify all expected symbols are present
 - Display detailed analysis
 
-**Unit Tests:**
-```powershell
-# Real pass/fail regression suite for every feature added in this fork
-.\unit-tests.ps1
-```
-
-Unlike `validate.ps1` above (a build-and-eyeball smoke test), this asserts
-exact field values extracted from real `.sym` output — return types,
-calling convention, complex/basic type detection, source file+line,
-destructor/pure-virtual override resolution, the VTable dump on a
-multiple-inheritance hierarchy, the ICF fix, direct `.exe`/`.dll` input, and
-column-aligned/dual-output-file formatting — and exits non-zero on any
-failure. See [UNIT_TESTS.md](UNIT_TESTS.md) for details.
+**Unit Tests:** `.\unit-tests.ps1` is a real pass/fail regression suite (as
+opposed to `validate.ps1`'s smoke test above) — see [UNIT_TESTS.md](UNIT_TESTS.md).
 
 **Manual Testing:**
 ```powershell
@@ -171,14 +160,14 @@ ObfSymbols/
 │   └── IMPLEMENTATION_NOTES.md  # Technical implementation details
 │
 ├── TestApp/                # Test application (EXE)
-│   ├── TestApp.cpp         # Comprehensive test symbols (435+ symbols)
+│   ├── TestApp.cpp         # Comprehensive test symbols (460+ symbols)
 │   ├── TestApp.vcxproj     # Project file
 │   ├── build.ps1           # Project build script
 │   └── README.md           # Test documentation
 │
 └── TestDLL/                # Test DLL
     ├── TestDLL.h           # Exported symbols header
-    ├── TestDLL.cpp         # DLL implementation (217+ symbols)
+    ├── TestDLL.cpp         # DLL implementation (227+ symbols)
     ├── TestDLL.vcxproj     # Project file
     ├── build.ps1           # Project build script
     └── README.md           # DLL test documentation
@@ -239,45 +228,12 @@ That's it! No installation, no registration, no dependencies.
 
 ## Test Projects - Validation Suite
 
-### TestApp (EXE) - 435+ Symbols
-
-The TestApp project provides comprehensive EXE testing with:
-
-- **Simple Functions** - Various parameter types and return values
-- **Function Overloads** - 4+ overloaded versions
-- **Static Functions** - Should appear as PRIVATE
-- **Classes & Structs** - Constructors, destructors, methods
-- **Templates** - Function and class templates with instantiations
-- **Virtual Methods** - Inheritance and polymorphism
-- **Namespaces** - Including nested namespaces
-- **Operators** - Overloaded operators
-- **Complex Types** - STL containers, references, pointers
-
-**Total: 435+ function symbols**
-
-### TestDLL (DLL) - 217+ Symbols
-
-The TestDLL project provides comprehensive DLL testing with:
-
-- **Exported Classes** - MathOperations with multiple methods
-- **Exported Structs** - Point3D with operators
-- **C Functions** - extern "C" exports (IntegerAdd, DoubleAdd, etc.)
-- **C++ Functions** - Exported with name mangling
-- **Template Classes** - Container<int>, Container<double>
-- **Namespace Functions** - Geometry::CircleArea, Advanced::SphereVolume
-- **DLL Exports** - __declspec(dllexport) symbols
-
-**Total: 217+ function symbols**
-
-### Combined Validation
-
-Running `.\validate.ps1` tests both:
-- ✅ EXE symbol extraction (TestApp.pdb)
-- ✅ DLL symbol extraction (TestDLL.pdb)
-- ✅ PUBLIC vs PRIVATE symbol detection
-- ✅ Exported functions and classes
-- ✅ Name mangling preservation
-- ✅ Template instantiations
+`TestApp` (EXE, 460+ symbols) and `TestDLL` (DLL, 227+ symbols) between them
+cover overloads, statics, virtuals/inheritance, templates, namespaces,
+operators, and complex parameter types — see [TestApp/README.md](TestApp/README.md)
+and [TestDLL/README.md](TestDLL/README.md) for the full breakdown.
+`.\validate.ps1` extracts and eyeballs symbols from both; `.\unit-tests.ps1`
+asserts exact field values against them (see [UNIT_TESTS.md](UNIT_TESTS.md)).
 
 ## Usage Examples
 

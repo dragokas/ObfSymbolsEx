@@ -1,10 +1,14 @@
 # Unit Tests
 
-`unit-tests.ps1` (repo root) is a real regression suite for every feature
-ObfSymbolsEx adds on top of the original ObfSymbols. Unlike `validate.ps1`
-(a build-and-eyeball smoke test that only checks substring containment and
-never fails on a missing symbol), every check here extracts a specific
-field from real `.sym` output and asserts its exact value; the script exits
+`unit-tests.ps1` (repo root) is a real pass/fail regression suite for every
+feature ObfSymbolsEx adds on top of the original ObfSymbols. Unlike
+`validate.ps1` (a build-and-eyeball smoke test that only checks substring
+containment and never fails on a missing symbol), every check here extracts
+a specific field from real `.sym` output and asserts its exact value —
+return types, calling convention, complex/basic type detection, source
+file+line, destructor/pure-virtual override resolution, the VTable dump on
+a multiple-inheritance hierarchy, the ICF fix, direct `.exe`/`.dll` input,
+and column-aligned/dual-output-file formatting — and the script exits
 non-zero if any assertion fails, so it is safe to wire into CI.
 
 ## Running
