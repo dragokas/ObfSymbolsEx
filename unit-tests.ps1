@@ -1,7 +1,8 @@
 # Unit-test suite for every feature ObfSymbolsEx adds on top of the original
 # ObfSymbols: VTable dump, return types, calling convention, complex/basic
 # type detection, source file+line, ICF fixes, destructor/pure-virtual
-# override resolution, direct .exe/.dll input, and column-aligned output.
+# override resolution, direct .exe/.dll input, column-aligned output, and
+# the -fc/-fm report filtering switches.
 #
 # Unlike validate.ps1 (a build-and-eyeball smoke test), every check here
 # asserts an exact field value extracted from real .sym output and the
@@ -339,6 +340,89 @@ if ($obfCounterpart) {
     Assert-True ($obfCounterpart -notmatch ' -> ') "Obfuscated file omits the return type"
     Assert-True ($obfCounterpart -notmatch 'SOURCE_FILE=') "Obfuscated file omits SOURCE_FILE"
 }
+
+# ============================================================
+# K. Report filtering (-fc/-fm)
+# ============================================================
+Section "Report filtering (-fc/-fm)"
+
+# -fc+: substring match, not exact -- "Rect" alone should still pull in
+# Rectangle's own lines and nothing else's.
+$outFcInclude = Join-Path $resultsDir "filter_fc_include"
+& $obfExe $testAppPdb "$outFcInclude.sym" -fc+Rect | Out-Null
+$fcIncludeLines = Get-Content "$outFcInclude.sym"
+Assert-True (($fcIncludeLines | Where-Object { $_ -match 'VTABLE_CLASS=Rectangle\b' }).Count -gt 0) `
+    "-fc+Rect keeps Rectangle's own lines (substring match, not exact)"
+Assert-True (($fcIncludeLines | Where-Object { $_ -match 'VTABLE_CLASS=(Circle|Shape|Widget|Calculator)\b' }).Count -eq 0) `
+    "-fc+Rect drops every other class's lines"
+Assert-True (($fcIncludeLines | Where-Object { $_ -match '\bFunctionWithReturn\(' }).Count -eq 0) `
+    "-fc+Rect drops free functions (no class name to match against)"
+
+# -fc-: the mirror image -- Rectangle disappears, everything else survives.
+$outFcExclude = Join-Path $resultsDir "filter_fc_exclude"
+& $obfExe $testAppPdb "$outFcExclude.sym" -fc-Rectangle | Out-Null
+$fcExcludeLines = Get-Content "$outFcExclude.sym"
+Assert-True (($fcExcludeLines | Where-Object { $_ -match 'VTABLE_CLASS=Rectangle\b' }).Count -eq 0) `
+    "-fc-Rectangle drops Rectangle's own lines"
+Assert-True (($fcExcludeLines | Where-Object { $_ -match '\bCircle::Area\(' }).Count -gt 0) `
+    "-fc-Rectangle keeps other classes' lines"
+Assert-True (($fcExcludeLines | Where-Object { $_ -match '\bFunctionWithReturn\(' }).Count -gt 0) `
+    "-fc-Rectangle keeps free functions"
+
+# -fc is always case-insensitive.
+$outFcUpper = Join-Path $resultsDir "filter_fc_case_upper"
+& $obfExe $testAppPdb "$outFcUpper.sym" -fc+RECTANGLE | Out-Null
+$outFcMixed = Join-Path $resultsDir "filter_fc_case_mixed"
+& $obfExe $testAppPdb "$outFcMixed.sym" -fc+ReCtAnGlE | Out-Null
+$caseDiff = Compare-Object (Get-Content "$outFcUpper.sym") (Get-Content "$outFcMixed.sym")
+Assert-True ($caseDiff -eq $null) "-fc matching is case-insensitive (RECTANGLE == ReCtAnGlE)"
+
+# -fm+/-fm- on server.sym test the WHOLE line, so they can match PUBLIC/
+# PRIVATE -- not just the method name/signature.
+$outFmInclude = Join-Path $resultsDir "filter_fm_include"
+& $obfExe $testAppPdb "$outFmInclude.sym" -fm+PUBLIC | Out-Null
+$fmIncludeLines = Get-Content "$outFmInclude.sym"
+Assert-True (($fmIncludeLines | Where-Object { $_ -notmatch '^PUBLIC' }).Count -eq 0) `
+    "-fm+PUBLIC keeps only PUBLIC lines (matches on the whole line, not just the name)"
+Assert-True ($fmIncludeLines.Count -gt 0) "-fm+PUBLIC still keeps at least one line"
+
+$outFmExclude = Join-Path $resultsDir "filter_fm_exclude"
+& $obfExe $testAppPdb "$outFmExclude.sym" -fm-PRIVATE | Out-Null
+$fmExcludeLines = Get-Content "$outFmExclude.sym"
+$baselinePublicCount = ($appLines | Where-Object { $_ -match '^PUBLIC' }).Count
+Assert-True (($fmExcludeLines | Where-Object { $_ -match '^PRIVATE' }).Count -eq 0) `
+    "-fm-PRIVATE drops every PRIVATE line"
+Assert-Equal ($fmExcludeLines | Where-Object { $_ -match '^PUBLIC' }).Count $baselinePublicCount `
+    "-fm-PRIVATE leaves every PUBLIC line untouched"
+
+# Combined -fc+ -fm+ -fm- against server_vtable_classes.sym, mirroring the
+# README's own worked example (-fc+CBaseEntity -fm+model -fm-Index): -fc
+# keeps/drops a whole group (header + members), -fm then keeps/drops
+# individual member lines within whatever group survived -fc.
+$outCombined = Join-Path $resultsDir "filter_combined"
+& $obfExe $testAppPdb "$outCombined.sym" -fc+Rectangle -fm+RVA -fm-Perimeter | Out-Null
+$combinedText = (Get-Content "$outCombined`_vtable_classes.sym") -join "`n"
+Assert-True ($combinedText -match 'CLASS Rectangle CLASS_ID=\d+') `
+    "-fc+Rectangle keeps the Rectangle group in server_vtable_classes.sym"
+Assert-True ($combinedText -notmatch 'CLASS Circle ') `
+    "-fc+Rectangle drops the Circle group entirely (header and members)"
+Assert-True ($combinedText -match 'Rectangle::(~Rectangle|Area)\(') `
+    "-fm+RVA (a token common to every member line) keeps Rectangle's other lines"
+Assert-True ($combinedText -notmatch 'Perimeter') `
+    "-fm-Perimeter removes just the Perimeter line from the surviving group"
+
+# WORD may be quoted; behavior must be identical to the unquoted form.
+$outFcExact = Join-Path $resultsDir "filter_fc_exact"
+& $obfExe $testAppPdb "$outFcExact.sym" -fc+Rectangle | Out-Null
+$outQuoted = Join-Path $resultsDir "filter_quoted"
+& $obfExe $testAppPdb "$outQuoted.sym" '-fc+"Rectangle"' | Out-Null
+$quoteDiff = Compare-Object (Get-Content "$outFcExact.sym") (Get-Content "$outQuoted.sym")
+Assert-True ($quoteDiff -eq $null) '-fc+"Rectangle" (quoted WORD) behaves identically to -fc+Rectangle'
+
+# An unrecognized switch is a hard error (non-zero exit), not a silent no-op.
+$outBadArg = Join-Path $resultsDir "filter_bad_arg"
+& $obfExe $testAppPdb "$outBadArg.sym" -bogus+X | Out-Null
+Assert-True ($LASTEXITCODE -ne 0) "An unrecognized filter switch fails with a non-zero exit code"
 
 # ============================================================
 # Summary

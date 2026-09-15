@@ -2,6 +2,8 @@
 //
 
 #include "PdbSymbolExtractor.h"
+#include "CommandLineParser.h"
+#include "SymbolFilter.h"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -20,6 +22,17 @@ std::string WStringToString(const std::wstring& wstr) {
     return strTo;
 }
 
+// Inverse of WStringToString(), used to run a -fm filter (which stores its
+// WORD as std::wstring) against a report line that has already been
+// formatted into a narrow std::string for writing.
+std::wstring StringToWString(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    std::wstring wstrTo(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
 // Fixed width of the VISIBILITY column: "PUBLIC"/"PRIVATE" are the only two
 // values that ever appear, so this never needs to be computed from data.
 static const int kVisibilityWidth = 7; // strlen("PRIVATE")
@@ -35,6 +48,10 @@ static const int kVisibilityWidth = 7; // strlen("PRIVATE")
 // OUTPUT_FORMAT.md's "no column alignment" note) -- VISIBILITY, SIZE, and
 // CALLING_CONVENTION don't have that problem, since their value space is
 // small and bounded by construction.
+//
+// Widths are always computed from the FULL (pre-filter) symbol set, not
+// whatever -fc/-fm leave behind -- so column alignment doesn't shift
+// depending on which filters happen to be active on a given run.
 struct ColumnWidths {
     int sizeFieldWidth;         // width of the whole "SIZE=NNN" token
     int callingConventionWidth;
@@ -132,8 +149,66 @@ static VTableColumnWidths ComputeVTableColumnWidths(const std::vector<VTableSymb
     return widths;
 }
 
+// Formats one server.sym mapping-file line (everything after the shared
+// column-aligned prefix through SOURCE_FILE=...), with no trailing newline.
+// Used both to actually write server.sym and, unchanged, to run -fm against
+// server_obfuscated.sym's symbols -- see WriteObfuscatedSymbolsToFile().
+static std::string FormatMappingLine(const FunctionSymbol& symbol, const ColumnWidths& widths) {
+    const char* visibility = symbol.isPublic ? "PUBLIC" : "PRIVATE";
+    std::string obfuscatedName = WStringToString(symbol.obfuscatedName);
+    std::string name = WStringToString(symbol.name);
+    std::string signature = WStringToString(symbol.signature);
+    std::string returnType = WStringToString(symbol.returnType);
+    std::string callingConvention = WStringToString(symbol.callingConvention);
+    std::string sizeField = "SIZE=" + std::to_string(symbol.length);
+
+    // Format:
+    // PUBLIC/PRIVATE ADDRESS SIZE=N OBFUSCATED_NAME CALLING_CONVENTION NAME(SIGNATURE) -> RETURN_TYPE
+    // IS_VIRTUAL VTABLE_OFFSET VTABLE_INDEX VTABLE_CLASS VTABLE_INTRO VTABLE_SHAPE THIS_ADJUST ... SOURCE_FILE
+    //
+    // VISIBILITY, SIZE=N, and CALLING_CONVENTION are left-padded to a
+    // per-run column width (see ComputeColumnWidths()) so short values
+    // ("PUBLIC", "SIZE=8", "__cdecl") line up with long ones
+    // ("PRIVATE", "SIZE=29382", "__thiscall") across the whole file.
+    // ADDRESS and everything from OBFUSCATED_NAME onward are left
+    // unpadded -- ADDRESS varies with the binary's own size, and
+    // REAL_NAME/SIGNATURE/RETURN_TYPE/VTABLE_CLASS can run far too long
+    // for column alignment to help.
+    std::ostringstream line;
+    line << std::left << std::setw(kVisibilityWidth) << visibility << " "
+        << "0x" << std::hex << std::uppercase << symbol.rva << std::dec << " "
+        << std::left << std::setw(widths.sizeFieldWidth) << sizeField << " "
+        << obfuscatedName << " "
+        << std::left << std::setw(widths.callingConventionWidth) << callingConvention << " "
+        << name << signature << " -> " << returnType << " "
+        << "IS_VIRTUAL=" << (symbol.isVirtual ? 1 : 0) << " "
+        << "VTABLE_OFFSET=";
+    if (symbol.vtableOffset >= 0) {
+        line << "0x" << std::hex << std::uppercase << symbol.vtableOffset << std::dec;
+    } else {
+        line << "-1";
+    }
+    line << " VTABLE_INDEX=" << symbol.vtableIndex
+        << " VTABLE_CLASS=" << WStringToString(symbol.className)
+        << " VTABLE_INTRO=" << (symbol.isIntroducingVirtual ? 1 : 0)
+        << " VTABLE_SHAPE=" << symbol.vtableShapeId
+        << " VTABLE_SLOTS=" << symbol.vtableSlotCount
+        << " THIS_ADJUST=" << symbol.thisAdjust
+        << " KIND=" << WStringToString(symbol.symbolKind)
+        << " THUNK=" << (symbol.isThunk ? 1 : 0)
+        << " THUNK_ORDINAL=" << symbol.thunkOrdinal
+        << " THUNK_TARGET_RVA=0x" << std::hex << std::uppercase << symbol.thunkTargetRva << std::dec
+        << " SOURCE_FILE=" << WStringToString(symbol.sourceLocation);
+    return line.str();
+}
+
 // Write symbols to output file
-bool WriteSymbolsToFile(const std::string& outputPath, const std::vector<FunctionSymbol>& symbols) {
+//
+// Filtering: -fc tests symbol.className; -fm tests the whole formatted
+// line (FormatMappingLine()), which is why -fm can match "PUBLIC"/
+// "PRIVATE" or anything else on the line, not just the method name.
+bool WriteSymbolsToFile(const std::string& outputPath, const std::vector<FunctionSymbol>& symbols,
+                        const SymbolFilter& filter) {
     std::ofstream outFile(outputPath);
     if (!outFile.is_open()) {
         std::cerr << "Failed to open output file: " << outputPath << std::endl;
@@ -143,51 +218,16 @@ bool WriteSymbolsToFile(const std::string& outputPath, const std::vector<Functio
     ColumnWidths widths = ComputeColumnWidths(symbols);
 
     for (const auto& symbol : symbols) {
-        const char* visibility = symbol.isPublic ? "PUBLIC" : "PRIVATE";
-        std::string obfuscatedName = WStringToString(symbol.obfuscatedName);
-        std::string name = WStringToString(symbol.name);
-        std::string signature = WStringToString(symbol.signature);
-        std::string returnType = WStringToString(symbol.returnType);
-        std::string callingConvention = WStringToString(symbol.callingConvention);
-        std::string sizeField = "SIZE=" + std::to_string(symbol.length);
-
-        // Format:
-        // PUBLIC/PRIVATE ADDRESS SIZE=N OBFUSCATED_NAME CALLING_CONVENTION NAME(SIGNATURE) -> RETURN_TYPE
-        // IS_VIRTUAL VTABLE_OFFSET VTABLE_INDEX VTABLE_CLASS VTABLE_INTRO VTABLE_SHAPE THIS_ADJUST ... SOURCE_FILE
-        //
-        // VISIBILITY, SIZE=N, and CALLING_CONVENTION are left-padded to a
-        // per-run column width (see ComputeColumnWidths()) so short values
-        // ("PUBLIC", "SIZE=8", "__cdecl") line up with long ones
-        // ("PRIVATE", "SIZE=29382", "__thiscall") across the whole file.
-        // ADDRESS and everything from OBFUSCATED_NAME onward are left
-        // unpadded -- ADDRESS varies with the binary's own size, and
-        // REAL_NAME/SIGNATURE/RETURN_TYPE/VTABLE_CLASS can run far too long
-        // for column alignment to help.
-        outFile << std::left << std::setw(kVisibilityWidth) << visibility << " "
-            << "0x" << std::hex << std::uppercase << symbol.rva << std::dec << " "
-            << std::left << std::setw(widths.sizeFieldWidth) << sizeField << " "
-            << obfuscatedName << " "
-            << std::left << std::setw(widths.callingConventionWidth) << callingConvention << " "
-            << name << signature << " -> " << returnType << " "
-            << "IS_VIRTUAL=" << (symbol.isVirtual ? 1 : 0) << " "
-            << "VTABLE_OFFSET=";
-        if (symbol.vtableOffset >= 0) {
-            outFile << "0x" << std::hex << std::uppercase << symbol.vtableOffset << std::dec;
-        } else {
-            outFile << "-1";
+        if (!filter.ShouldKeepClass(symbol.className)) {
+            continue;
         }
-        outFile << " VTABLE_INDEX=" << symbol.vtableIndex
-            << " VTABLE_CLASS=" << WStringToString(symbol.className)
-            << " VTABLE_INTRO=" << (symbol.isIntroducingVirtual ? 1 : 0)
-            << " VTABLE_SHAPE=" << symbol.vtableShapeId
-            << " VTABLE_SLOTS=" << symbol.vtableSlotCount
-            << " THIS_ADJUST=" << symbol.thisAdjust
-            << " KIND=" << WStringToString(symbol.symbolKind)
-            << " THUNK=" << (symbol.isThunk ? 1 : 0)
-            << " THUNK_ORDINAL=" << symbol.thunkOrdinal
-            << " THUNK_TARGET_RVA=0x" << std::hex << std::uppercase << symbol.thunkTargetRva << std::dec
-            << " SOURCE_FILE=" << WStringToString(symbol.sourceLocation)
-            << std::endl;
+
+        std::string line = FormatMappingLine(symbol, widths);
+        if (!filter.ShouldKeepLine(StringToWString(line))) {
+            continue;
+        }
+
+        outFile << line << std::endl;
     }
 
     outFile.close();
@@ -195,7 +235,16 @@ bool WriteSymbolsToFile(const std::string& outputPath, const std::vector<Functio
 }
 
 // Write obfuscated-only symbols to output file (without real names)
-bool WriteObfuscatedSymbolsToFile(const std::string& outputPath, const std::vector<FunctionSymbol>& symbols) {
+//
+// Filtering: -fc tests symbol.className, same as WriteSymbolsToFile(). -fm
+// is also evaluated against FormatMappingLine()'s real-name text (not this
+// file's own sparser line) -- the obfuscated line has no method name,
+// signature, or source file left to search, so testing its own text would
+// make -fm effectively unusable here; testing the same real text as
+// server.sym instead keeps the two files' surviving symbol sets identical
+// for any given filter.
+bool WriteObfuscatedSymbolsToFile(const std::string& outputPath, const std::vector<FunctionSymbol>& symbols,
+                                  const SymbolFilter& filter) {
     std::ofstream outFile(outputPath);
     if (!outFile.is_open()) {
         std::cerr << "Failed to open obfuscated output file: " << outputPath << std::endl;
@@ -205,6 +254,13 @@ bool WriteObfuscatedSymbolsToFile(const std::string& outputPath, const std::vect
     ColumnWidths widths = ComputeColumnWidths(symbols);
 
     for (const auto& symbol : symbols) {
+        if (!filter.ShouldKeepClass(symbol.className)) {
+            continue;
+        }
+        if (!filter.ShouldKeepLine(StringToWString(FormatMappingLine(symbol, widths)))) {
+            continue;
+        }
+
         const char* visibility = symbol.isPublic ? "PUBLIC" : "PRIVATE";
         std::string obfuscatedName = WStringToString(symbol.obfuscatedName);
         std::string callingConvention = WStringToString(symbol.callingConvention);
@@ -257,11 +313,20 @@ bool WriteObfuscatedSymbolsToFile(const std::string& outputPath, const std::vect
 // descriptors reconstructed from the virtual-method metadata itself.
 // Synthetic tables are explicitly marked SOURCE=METHOD_METADATA and never
 // pretend to have a concrete DIA VTable symbol ID or RVA.
+//
+// Filtering: -fc tests table.className -- a non-match skips the table's
+// header AND every one of its slot lines (the whole group). -fm tests each
+// SLOT= line individually, always against its real-names text (name,
+// signature, return type, class, source file) regardless of
+// `includeRealNames`, so server_vtable.sym and server_vtable_obfuscated.sym
+// (the two calls this function gets, one per file) keep exactly the same
+// slots for a given filter.
 bool WriteVTablesToFile(const std::string& outputPath,
                         const std::vector<VTableSymbol>& vtables,
                         const std::vector<FunctionSymbol>& symbols,
                         bool includeRealNames,
-                        DWORD targetPointerSize) {
+                        DWORD targetPointerSize,
+                        const SymbolFilter& filter) {
     std::ofstream outFile(outputPath);
     if (!outFile.is_open()) {
         std::cerr << "Failed to open vtable output file: " << outputPath << std::endl;
@@ -372,6 +437,13 @@ bool WriteVTablesToFile(const std::string& outputPath,
         if (synthetic)
             ++syntheticCount;
 
+        // -fc: skip the whole table (header + every slot line) when its
+        // class doesn't match. Stats above still count every table found,
+        // regardless of this filter.
+        if (!filter.ShouldKeepClass(table.className)) {
+            continue;
+        }
+
         // Identity fields first (CLASS/CLASS_ID/SHAPE/SLOTS -- what a human
         // is almost always looking for), then the source-tracking fields
         // (VTABLE_SOURCE/ID/RVA -- whether this is a concrete DIA_VTABLE or
@@ -425,8 +497,15 @@ bool WriteVTablesToFile(const std::string& outputPath,
                 << (static_cast<ULONGLONG>(slot) * table.pointerSize);
             std::string offsetField = offsetStream.str();
 
-            outFile << std::left << std::setw(widths.slotFieldWidth) << slotField << " "
+            std::ostringstream outLine;
+            outLine << std::left << std::setw(widths.slotFieldWidth) << slotField << " "
                 << std::left << std::setw(widths.offsetFieldWidth) << offsetField;
+
+            // Filter-test text: always built with the real method identity
+            // (name/signature/return type/class/source file), independent
+            // of `includeRealNames` -- see this function's doc comment.
+            std::ostringstream filterLine;
+            filterLine << slotField << " " << offsetField;
 
             if (method) {
                 std::string callingConvention = WStringToString(method->callingConvention);
@@ -436,7 +515,7 @@ bool WriteVTablesToFile(const std::string& outputPath,
                 std::string rvaField = rvaStream.str();
                 std::string sizeField = "SIZE=" + std::to_string(method->length);
 
-                outFile << " " << std::left << std::setw(widths.rvaFieldWidth) << rvaField
+                outLine << " " << std::left << std::setw(widths.rvaFieldWidth) << rvaField
                     << " " << std::left << std::setw(widths.sizeFieldWidth) << sizeField;
 
                 // Calling convention sits right before whichever field plays
@@ -444,9 +523,9 @@ bool WriteVTablesToFile(const std::string& outputPath,
                 // name here (no real name in this file), or the real
                 // METHOD= name below when includeRealNames is set.
                 if (!includeRealNames) {
-                    outFile << " " << callingConvention;
+                    outLine << " " << callingConvention;
                 }
-                outFile << " OBFUSCATED=" << WStringToString(method->obfuscatedName)
+                outLine << " OBFUSCATED=" << WStringToString(method->obfuscatedName)
                     << " MATCH=" << matchType
                     << " KIND=" << WStringToString(method->symbolKind)
                     << " THUNK=" << (method->isThunk ? 1 : 0)
@@ -455,22 +534,40 @@ bool WriteVTablesToFile(const std::string& outputPath,
                     << " THIS_ADJUST=" << method->thisAdjust;
 
                 if (includeRealNames) {
-                    outFile << " " << callingConvention
+                    outLine << " " << callingConvention
                         << " METHOD=" << WStringToString(method->name)
                         << WStringToString(method->signature)
                         << " METHOD_RETURN_TYPE=" << WStringToString(method->returnType)
                         << " METHOD_CLASS=" << WStringToString(method->className)
                         << " SOURCE_FILE=" << WStringToString(method->sourceLocation);
                 }
+
+                filterLine << " " << rvaField << " " << sizeField << " " << callingConvention
+                    << " OBFUSCATED=" << WStringToString(method->obfuscatedName)
+                    << " MATCH=" << matchType
+                    << " KIND=" << WStringToString(method->symbolKind)
+                    << " THUNK=" << (method->isThunk ? 1 : 0)
+                    << " THUNK_ORDINAL=" << method->thunkOrdinal
+                    << " THUNK_TARGET_RVA=0x" << std::hex << std::uppercase << method->thunkTargetRva << std::dec
+                    << " THIS_ADJUST=" << method->thisAdjust
+                    << " METHOD=" << WStringToString(method->name)
+                    << WStringToString(method->signature)
+                    << " METHOD_RETURN_TYPE=" << WStringToString(method->returnType)
+                    << " METHOD_CLASS=" << WStringToString(method->className)
+                    << " SOURCE_FILE=" << WStringToString(method->sourceLocation);
             } else {
-                outFile << " " << std::left << std::setw(widths.rvaFieldWidth) << "RVA=-1"
+                outLine << " " << std::left << std::setw(widths.rvaFieldWidth) << "RVA=-1"
                     << " " << std::left << std::setw(widths.sizeFieldWidth) << "SIZE=-1"
                     << " OBFUSCATED=- MATCH=NONE";
                 if (includeRealNames)
-                    outFile << " METHOD=UNKNOWN";
+                    outLine << " METHOD=UNKNOWN";
+
+                filterLine << " RVA=-1 SIZE=-1 OBFUSCATED=- MATCH=NONE METHOD=UNKNOWN";
             }
 
-            outFile << std::endl;
+            if (filter.ShouldKeepLine(StringToWString(filterLine.str()))) {
+                outFile << outLine.str() << std::endl;
+            }
         }
 
         outFile << std::endl;
@@ -530,8 +627,13 @@ std::vector<VTableClassGroup> CollectVTableClassGroups(const std::vector<Functio
 // Write a class-centric view of every virtual method. This file deliberately
 // does not depend on SymTagVTable: a class is included whenever DIA gives a
 // virtual method with a valid VTABLE_INDEX and class name.
+//
+// Filtering: -fc tests group.className -- a non-match skips the whole group
+// (header + every method line). -fm tests each "[N] ..." method line
+// individually.
 bool WriteVTableClassesToFile(const std::string& outputPath,
-                              const std::vector<FunctionSymbol>& symbols) {
+                              const std::vector<FunctionSymbol>& symbols,
+                              const SymbolFilter& filter) {
     std::ofstream outFile(outputPath);
     if (!outFile.is_open()) {
         std::cerr << "Failed to open VTable classes output file: " << outputPath << std::endl;
@@ -572,6 +674,13 @@ bool WriteVTableClassesToFile(const std::string& outputPath,
         for (const FunctionSymbol* method : group.methods)
             maxSlots = (std::max)(maxSlots, method->vtableSlotCount);
 
+        // Stats below count every method found, regardless of filtering.
+        methodCount += group.methods.size();
+
+        if (!filter.ShouldKeepClass(group.className)) {
+            continue;
+        }
+
         outFile << "CLASS " << WStringToString(group.className)
             << " CLASS_ID=" << group.classParentId;
         if (maxSlots != 0)
@@ -579,8 +688,9 @@ bool WriteVTableClassesToFile(const std::string& outputPath,
         outFile << std::endl;
 
         for (const FunctionSymbol* method : group.methods) {
+            std::ostringstream line;
             std::string indexField = "[" + std::to_string(method->vtableIndex) + "]";
-            outFile << "  " << std::left << std::setw(indexFieldWidth) << indexField
+            line << "  " << std::left << std::setw(indexFieldWidth) << indexField
                 << " RVA=0x" << std::hex << std::uppercase << method->rva << std::dec
                 << " " << WStringToString(method->callingConvention)
                 << " " << WStringToString(method->name) << WStringToString(method->signature)
@@ -591,15 +701,16 @@ bool WriteVTableClassesToFile(const std::string& outputPath,
                 << " KIND=" << WStringToString(method->symbolKind);
 
             if (method->isThunk) {
-                outFile << " THUNK_ORDINAL=" << method->thunkOrdinal
+                line << " THUNK_ORDINAL=" << method->thunkOrdinal
                     << " THUNK_TARGET_RVA=0x" << std::hex << std::uppercase
                     << method->thunkTargetRva << std::dec;
             }
 
-            outFile << " SOURCE_FILE=" << WStringToString(method->sourceLocation);
+            line << " SOURCE_FILE=" << WStringToString(method->sourceLocation);
 
-            outFile << std::endl;
-            ++methodCount;
+            if (filter.ShouldKeepLine(StringToWString(line.str()))) {
+                outFile << line.str() << std::endl;
+            }
         }
 
         outFile << std::endl;
@@ -617,27 +728,38 @@ bool WriteVTableClassesToFile(const std::string& outputPath,
 // never inferred from source code. `pathClassIds` guards against a class
 // re-appearing as its own ancestor; this should not happen for a well-formed
 // C++ hierarchy, but PDB data is not proof against anomalies.
+//
+// Filtering: -fm tests each tree line individually (this whole subtree is
+// only reached at all when the group's top-level class already passed -fc
+// -- see WriteVTableInheritanceToFile()); a dropped ancestor line does not
+// stop traversal into its own children.
 static void WriteInheritanceSubtree(std::ofstream& outFile,
                                      DWORD classId,
                                      const std::string& prefix,
                                      bool isLast,
                                      const std::unordered_map<DWORD, ClassHierarchyInfo>& classHierarchy,
-                                     std::vector<DWORD>& pathClassIds) {
+                                     std::vector<DWORD>& pathClassIds,
+                                     const SymbolFilter& filter) {
     auto it = classHierarchy.find(classId);
 
     std::string name = (it != classHierarchy.end() && !it->second.className.empty())
         ? WStringToString(it->second.className)
         : ("UnknownClass#" + std::to_string(classId));
 
-    outFile << prefix << (isLast ? "`-- " : "+-- ") << name << std::endl;
+    std::string line = prefix + (isLast ? "`-- " : "+-- ") + name;
+    if (filter.ShouldKeepLine(StringToWString(line))) {
+        outFile << line << std::endl;
+    }
 
     if (it == classHierarchy.end() || it->second.baseClassIds.empty()) {
         return;
     }
 
     if (std::find(pathClassIds.begin(), pathClassIds.end(), classId) != pathClassIds.end()) {
-        outFile << prefix << (isLast ? "    " : "|   ")
-            << "(cycle detected in PDB data, stopping)" << std::endl;
+        std::string cycleLine = prefix + (isLast ? "    " : "|   ") + "(cycle detected in PDB data, stopping)";
+        if (filter.ShouldKeepLine(StringToWString(cycleLine))) {
+            outFile << cycleLine << std::endl;
+        }
         return;
     }
     pathClassIds.push_back(classId);
@@ -646,7 +768,7 @@ static void WriteInheritanceSubtree(std::ofstream& outFile,
     const auto& bases = it->second.baseClassIds;
     for (size_t i = 0; i < bases.size(); ++i) {
         WriteInheritanceSubtree(outFile, bases[i], childPrefix, (i + 1 == bases.size()),
-                                 classHierarchy, pathClassIds);
+                                 classHierarchy, pathClassIds, filter);
     }
 
     pathClassIds.pop_back();
@@ -662,9 +784,14 @@ static void WriteInheritanceSubtree(std::ofstream& outFile,
 // This is derived entirely from this PDB's own DIA SymTagBaseClass data
 // (see PdbSymbolExtractor::ExtractSymbolsFromPdb); nothing here reads or
 // infers anything from source code.
+//
+// Filtering: -fc tests group.className -- a non-match skips the class and
+// its entire hierarchy tree. -fm then applies per tree line, same as
+// WriteInheritanceSubtree() above.
 bool WriteVTableInheritanceToFile(const std::string& outputPath,
                                    const std::vector<FunctionSymbol>& symbols,
-                                   const std::unordered_map<DWORD, ClassHierarchyInfo>& classHierarchy) {
+                                   const std::unordered_map<DWORD, ClassHierarchyInfo>& classHierarchy,
+                                   const SymbolFilter& filter) {
     std::ofstream outFile(outputPath);
     if (!outFile.is_open()) {
         std::cerr << "Failed to open VTable inheritance output file: " << outputPath << std::endl;
@@ -674,19 +801,26 @@ bool WriteVTableInheritanceToFile(const std::string& outputPath,
     std::vector<VTableClassGroup> groups = CollectVTableClassGroups(symbols);
 
     for (const auto& group : groups) {
+        if (!filter.ShouldKeepClass(group.className)) {
+            continue;
+        }
+
         outFile << "CLASS " << WStringToString(group.className)
             << " CLASS_ID=" << group.classParentId << std::endl;
 
         auto it = classHierarchy.find(group.classParentId);
         if (it == classHierarchy.end() || it->second.baseClassIds.empty()) {
-            outFile << "  (no base classes reported by DIA for this class)" << std::endl;
+            std::string line = "  (no base classes reported by DIA for this class)";
+            if (filter.ShouldKeepLine(StringToWString(line))) {
+                outFile << line << std::endl;
+            }
         } else {
             std::vector<DWORD> path;
             path.push_back(group.classParentId);
             const auto& bases = it->second.baseClassIds;
             for (size_t i = 0; i < bases.size(); ++i) {
                 WriteInheritanceSubtree(outFile, bases[i], "  ", (i + 1 == bases.size()),
-                                         classHierarchy, path);
+                                         classHierarchy, path, filter);
             }
         }
 
@@ -703,29 +837,34 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wcout << L"ObfSymbolsEx - PDB Function Symbol Extractor" << std::endl;
     std::wcout << L"=============================================" << std::endl << std::endl;
 
-    if (argc != 3) {
-        std::wcout << L"Usage: ObfSymbolsEx.exe <input.pdb|input.exe|input.dll> <output.sym>" << std::endl;
-        std::wcout << L"Example: ObfSymbolsEx.exe myapp.pdb symbols.sym" << std::endl;
-        std::wcout << L"         ObfSymbolsEx.exe myapp.exe symbols.sym  (DIA locates the matching PDB itself)" << std::endl;
+    CommandLineOptions options;
+    std::wstring parseError;
+    if (!CommandLineParser::Parse(argc, argv, options, parseError)) {
+        std::wcerr << L"Error: " << parseError << std::endl << std::endl;
+        CommandLineParser::PrintUsage();
         return 1;
     }
 
-    std::wstring pdbPath = argv[1];
-    std::string outputPath = WStringToString(argv[2]);
+    std::wstring pdbPath = options.inputPath;
+    std::string outputPath = WStringToString(options.outputPath);
 
     std::wcout << L"Input: " << pdbPath << std::endl;
-    std::wcout << L"Output file: " << argv[2] << std::endl << std::endl;
+    std::wcout << L"Output file: " << options.outputPath << std::endl;
+    if (options.filter.IsActive()) {
+        std::wcout << L"Filters: " << options.filter.Describe() << std::endl;
+    }
+    std::wcout << std::endl;
 
     // Create extractor (DIA SDK is initialized in constructor)
     PdbSymbolExtractor extractor;
-    
+
     // Check if initialization was successful
     if (!extractor.IsInitialized()) {
         std::wcerr << L"Failed to initialize PDB symbol extractor" << std::endl;
         std::wcerr << L"Error: " << extractor.GetLastError() << std::endl;
         return 1;
     }
-    
+
     // Extract symbols from PDB
     std::vector<FunctionSymbol> symbols;
     std::vector<VTableSymbol> vtables;
@@ -745,7 +884,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wcout << L"Writing to output files..." << std::endl;
 
     // Write full mapping file (with real names)
-    if (!WriteSymbolsToFile(outputPath, symbols)) {
+    if (!WriteSymbolsToFile(outputPath, symbols, options.filter)) {
         std::wcerr << L"Failed to write symbols to output file" << std::endl;
         return 1;
     }
@@ -760,7 +899,7 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     // Write obfuscated-only file (without real names)
-    if (!WriteObfuscatedSymbolsToFile(obfuscatedPath, symbols)) {
+    if (!WriteObfuscatedSymbolsToFile(obfuscatedPath, symbols, options.filter)) {
         std::wcerr << L"Failed to write obfuscated symbols file" << std::endl;
         return 1;
     }
@@ -777,7 +916,7 @@ int wmain(int argc, wchar_t* argv[]) {
         vtablePath += "_vtable";
     }
 
-    if (!WriteVTablesToFile(vtablePath, vtables, symbols, true, targetPointerSize)) {
+    if (!WriteVTablesToFile(vtablePath, vtables, symbols, true, targetPointerSize, options.filter)) {
         std::wcerr << L"Failed to write VTable mapping file" << std::endl;
         return 1;
     }
@@ -791,7 +930,7 @@ int wmain(int argc, wchar_t* argv[]) {
         vtableObfuscatedPath += "_vtable_obfuscated";
     }
 
-    if (!WriteVTablesToFile(vtableObfuscatedPath, vtables, symbols, false, targetPointerSize)) {
+    if (!WriteVTablesToFile(vtableObfuscatedPath, vtables, symbols, false, targetPointerSize, options.filter)) {
         std::wcerr << L"Failed to write obfuscated VTable mapping file" << std::endl;
         return 1;
     }
@@ -805,7 +944,7 @@ int wmain(int argc, wchar_t* argv[]) {
         vtableClassesPath += "_vtable_classes";
     }
 
-    if (!WriteVTableClassesToFile(vtableClassesPath, symbols)) {
+    if (!WriteVTableClassesToFile(vtableClassesPath, symbols, options.filter)) {
         std::wcerr << L"Failed to write VTable classes file" << std::endl;
         return 1;
     }
@@ -820,7 +959,7 @@ int wmain(int argc, wchar_t* argv[]) {
         vtableInheritancePath += "_vtable_inheritance";
     }
 
-    if (!WriteVTableInheritanceToFile(vtableInheritancePath, symbols, classHierarchy)) {
+    if (!WriteVTableInheritanceToFile(vtableInheritancePath, symbols, classHierarchy, options.filter)) {
         std::wcerr << L"Failed to write VTable inheritance file" << std::endl;
         return 1;
     }

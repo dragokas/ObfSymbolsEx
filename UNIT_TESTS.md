@@ -70,6 +70,13 @@ check runs against a dedicated **Release** build of `TestDLL`.
 - **Obfuscated name / dual-output-file consistency** — every symbol gets an
   `obf_XXXXXXXX` name, the obfuscated file has exactly one line per mapping
   line, and it never leaks the real name, return type, or source file.
+- **Report filtering (`-fc`/`-fm`)** — `-fc+`/`-fc-` match class names by
+  case-insensitive substring (not exact), drop free functions from a `-fc+`
+  result (nothing to match), and keep/drop a whole group (header + members)
+  in `server_vtable_classes.sym`; `-fm+`/`-fm-` match a whole line (so
+  `PUBLIC`/`PRIVATE` are fair game); `+` and `-` combine like the README's
+  own `-fc+CBaseEntity -fm+model -fm-Index` example; WORD may be quoted; an
+  unrecognized switch fails with a non-zero exit code.
 
 ## Fixtures added for this suite
 

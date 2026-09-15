@@ -19,6 +19,32 @@ The input can also be the built `.exe`/`.dll` itself instead of its `.pdb`
 — ObfSymbolsEx decides which by extension, and for a binary path lets DIA
 locate the matching PDB itself.
 
+### Filtering output
+
+Any number of these may follow `<output.sym>`, in any order, to narrow every
+report file down to matching classes/lines. Checks are always
+case-insensitive **substring** checks, never a whole-word match.
+
+| Switch | Meaning |
+|---|---|
+| `-fc+WORD` | Only include classes whose name contains WORD |
+| `-fc-WORD` | Exclude classes whose name contains WORD |
+| `-fm+WORD` | Only include lines that contain WORD |
+| `-fm-WORD` | Exclude lines that contain WORD |
+
+Multiple `+` switches of the same kind OR together; so do multiple `-`
+switches. `+` is applied first, then `-` narrows what's left. WORD may be
+quoted (`-fc+"My Class"`). `-fc` tests a class name — in `server.sym`/
+`server_obfuscated.sym` that's the symbol's own class; in the grouped
+`server_vtable*.sym` files it's a whole group's header, so a match keeps or
+drops the entire group (header + members) at once. `-fm` always tests a
+whole line, so in `server.sym` it can match `PUBLIC`/`PRIVATE` too, not just
+the method name.
+
+```powershell
+ObfSymbolsEx.exe server.pdb server.sym -fc+CBaseEntity -fm+model -fm-Index
+```
+
 # ObfSymbolsEx vs ObfSymbols
 
 > **ObfSymbolsEx** is an extended version of the original [ObfSymbols](https://github.com/chrisnas/VibeCoding/tree/main/ObfSymbols) utility by Christophe Nasarre ([@chrisnas](https://github.com/chrisnas)) — see the original article, [*"Vibe coding a PDB dumper, or how I became a product manager"*](https://chnasarre.medium.com/vibe-coding-a-pdb-dumper-or-how-i-became-a-product-manager-f957106a3e9f).
@@ -33,6 +59,7 @@ locate the matching PDB itself.
 - **Destructor / pure-virtual override resolution fixes**
 - **Direct `.exe`/`.dll` input** — DIA locates the matching PDB automatically
 - **Column-aligned output** for readability
+- **Report filtering** (`-fc+`/`-fc-`/`-fm+`/`-fm-`) — narrow any report to matching classes/lines
 
 ## Overview
 
