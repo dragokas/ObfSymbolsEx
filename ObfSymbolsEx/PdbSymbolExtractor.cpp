@@ -1,5 +1,6 @@
 // PdbSymbolExtractor.cpp - Implementation of PDB symbol extraction class
 #include "PdbSymbolExtractor.h"
+#include "PdbSymbolDownloader.h"
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -810,17 +811,18 @@ HRESULT PdbSymbolExtractor::ExtractSymbolsFromPdb(const std::wstring& pdbPath,
     classHierarchy.clear();
     outTargetPointerSize = static_cast<DWORD>(sizeof(void*));
 
-    // Load debug data. A .exe/.dll path goes through loadDataForExe(), which
-    // has DIA locate and load the matching PDB itself (same directory as the
-    // binary, embedded GUID/age against a symbol server or local cache, ...)
-    // -- letting the caller point at the binary directly instead of having
-    // to know its PDB's exact path. Anything else (a .pdb path, or no
-    // recognized extension) goes through loadDataFromPdb() as before.
-    std::wstring extension = fs::path(pdbPath).extension().wstring();
-    for (wchar_t& c : extension) {
-        c = static_cast<wchar_t>(towlower(c));
-    }
-    bool isBinaryPath = (extension == L".exe" || extension == L".dll");
+    // Load debug data. A PE image (.exe/.dll/.ocx/.sys/... -- detected by
+    // its MZ/PE magic, not by extension) goes through loadDataForExe(),
+    // which has DIA locate and load the matching PDB itself (same
+    // directory as the binary, embedded GUID/age against a symbol server
+    // or local cache, ...) -- letting the caller point at the binary
+    // directly instead of having to know its PDB's exact path. This is
+    // only ever reached as a fallback: ObfSymbolsEx.cpp's wmain() already
+    // tries PdbSymbolDownloader first for any PE input and, on success,
+    // passes the downloaded .pdb here instead. Anything that isn't a PE
+    // image (a .pdb path, or an unrecognized file) goes through
+    // loadDataFromPdb() as before.
+    bool isBinaryPath = PdbSymbolDownloader::IsPeFile(pdbPath);
 
     HRESULT hr = isBinaryPath
         ? _pDiaDataSource->loadDataForExe(pdbPath.c_str(), NULL, NULL)

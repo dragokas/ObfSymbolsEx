@@ -77,6 +77,13 @@ check runs against a dedicated **Release** build of `TestDLL`.
   `PUBLIC`/`PRIVATE` are fair game); `+` and `-` combine like the README's
   own `-fc+CBaseEntity -fm+model -fm-Index` example; WORD may be quoted; an
   unrecognized switch fails with a non-zero exit code.
+- **Simple reports (`_simple_sort_by_class`/`_simple_sort_by_name`)** — each
+  line is bare `Name(Signature) -> ReturnType`, nothing else; one line per
+  `server.sym` symbol; `_simple_sort_by_class` is sorted by the
+  fully-qualified name (so a class's own methods end up contiguous);
+  `_simple_sort_by_name` is sorted by just the bare method name, which pulls
+  same-named methods from *different* classes (e.g. `Rectangle::Area` /
+  `Circle::Area`) next to each other instead; both still honor `-fc`/`-fm`.
 
 ## Fixtures added for this suite
 

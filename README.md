@@ -15,35 +15,10 @@ A tool for extracting function symbols from PDB (Program Database) files without
 .\ObfSymbolsEx\x64\Release\ObfSymbolsEx.exe input.pdb output.sym
 ```
 
-The input can also be the built `.exe`/`.dll` itself instead of its `.pdb`
-— ObfSymbolsEx decides which by extension, and for a binary path lets DIA
-locate the matching PDB itself.
-
-### Filtering output
-
-Any number of these may follow `<output.sym>`, in any order, to narrow every
-report file down to matching classes/lines. Checks are always
-case-insensitive **substring** checks, never a whole-word match.
-
-| Switch | Meaning |
-|---|---|
-| `-fc+WORD` | Only include classes whose name contains WORD |
-| `-fc-WORD` | Exclude classes whose name contains WORD |
-| `-fm+WORD` | Only include lines that contain WORD |
-| `-fm-WORD` | Exclude lines that contain WORD |
-
-Multiple `+` switches of the same kind OR together; so do multiple `-`
-switches. `+` is applied first, then `-` narrows what's left. WORD may be
-quoted (`-fc+"My Class"`). `-fc` tests a class name — in `server.sym`/
-`server_obfuscated.sym` that's the symbol's own class; in the grouped
-`server_vtable*.sym` files it's a whole group's header, so a match keeps or
-drops the entire group (header + members) at once. `-fm` always tests a
-whole line, so in `server.sym` it can match `PUBLIC`/`PRIVATE` too, not just
-the method name.
-
-```powershell
-ObfSymbolsEx.exe server.pdb server.sym -fc+CBaseEntity -fm+model -fm-Index
-```
+The input can also be a PE image itself instead of its `.pdb` — `.exe`,
+`.dll`, `.ocx`, `.sys`, ... — detected by its `MZ`/`PE` header, not by
+extension. See "Downloading symbols" below for how ObfSymbolsEx locates the
+matching PDB in that case.
 
 # ObfSymbolsEx vs ObfSymbols
 
@@ -57,9 +32,11 @@ ObfSymbolsEx.exe server.pdb server.sym -fc+CBaseEntity -fm+model -fm-Index
 - **Source file + line number** for each symbol, resolved from the PDB's own debug line info
 - **Identical Code Folding (ICF) fixes** — for both vtable metadata and source-file attribution, where the linker folds byte-identical functions together
 - **Destructor / pure-virtual override resolution fixes**
-- **Direct `.exe`/`.dll` input** — DIA locates the matching PDB automatically
+- **Direct PE input** (`.exe`/`.dll`/`.ocx`/`.sys`/... — detected by header magic, not extension)
+- **Symbol server download** — a PE input's matching PDB is located and downloaded automatically (`-srv=`, `_NT_SYMBOL_PATH`, or the default Microsoft symbol server), before falling back to DIA's own PDB search
 - **Column-aligned output** for readability
 - **Report filtering** (`-fc+`/`-fc-`/`-fm+`/`-fm-`) — narrow any report to matching classes/lines
+- **Simple reports** (`_simple_sort_by_class.sym`, `_simple_sort_by_name.sym`) — a bare `Name(Signature) -> ReturnType` list, sorted either by class or by method name
 
 ## Overview
 
@@ -81,16 +58,29 @@ This solution contains three projects:
 
 ### Output Files
 
-Given `ObfSymbolsEx.exe server.pdb server.sym`, six files are written next to `server.sym`:
+Given `ObfSymbolsEx.exe server.pdb server.sym`, eight files are written next to `server.sym`:
 
 | File | Purpose |
 |---|---|
 | `server.sym` | Mapping file — real names, signatures, return types, source file:line |
 | `server_obfuscated.sym` | Same symbols, real name/signature/source file stripped — safe to redistribute |
+| `server_simple_sort_by_class.sym` | Bare `Name(Signature) -> ReturnType` list, one per symbol, sorted by the fully-qualified name (so a class's own methods fall together) |
+| `server_simple_sort_by_name.sym` | Same bare list, sorted by just the method name — same-named methods on different classes (e.g. two `Area()` overrides) end up next to each other instead |
 | `server_vtable.sym` | Raw per-vtable slot dump (mapping names), including unresolved/unknown slots |
 | `server_vtable_obfuscated.sym` | Same vtable dump, obfuscated names only |
 | `server_vtable_classes.sym` | Per-class resolved virtual-method table (only known slots, one block per class) |
 | `server_vtable_inheritance.sym` | Per-class base-class tree, no vtable data |
+
+**server_simple_sort_by_class.sym / server_simple_sort_by_name.sym**
+
+```
+vgui::TreeView::SetLabelEditingAllowed(int, bool) -> void
+Studio_AnimPosition(mstudioanimdesc_t *, float, Vector &, QAngle &) -> bool
+IBoneSetup::CalcBoneAdj(Vector *, Quaternion *, const float *) -> void
+```
+
+Just the name, parameters, and return type — nothing else. `-fc`/`-fm`
+filtering applies the same way it does to `server.sym`.
 
 ### Output Format
 
@@ -276,24 +266,65 @@ To distribute ObfSymbolsEx:
 
 That's it! No installation, no registration, no dependencies.
 
-## Usage Examples
+## Usage & Command line options
 
 ### Extract Symbols
 ```powershell
 .\ObfSymbolsEx\x64\Release\ObfSymbolsEx.exe myapp.pdb symbols.sym
 ```
 
-### Filter Results
+### Filtering output
+
+Any number of these may follow `<output.sym>`, in any order, to narrow every
+report file down to matching classes/lines. Checks are always
+case-insensitive **substring** checks, never a whole-word match.
+
+| Switch | Meaning |
+|---|---|
+| `-fc+WORD` | Only include classes whose name contains WORD |
+| `-fc-WORD` | Exclude classes whose name contains WORD |
+| `-fm+WORD` | Only include lines that contain WORD |
+| `-fm-WORD` | Exclude lines that contain WORD |
+
+Multiple `+` switches of the same kind OR together; so do multiple `-`
+switches. `+` is applied first, then `-` narrows what's left. WORD may be
+quoted (`-fc+"My Class"`). `-fc` tests a class name — in `server.sym`/
+`server_obfuscated.sym` that's the symbol's own class; in the grouped
+`server_vtable*.sym` files it's a whole group's header, so a match keeps or
+drops the entire group (header + members) at once. `-fm` always tests a
+whole line, so in `server.sym` it can match `PUBLIC`/`PRIVATE` too, not just
+the method name.
+
 ```powershell
-# Show only PUBLIC symbols
-Get-Content symbols.sym | Where-Object { $_ -match "^PUBLIC" }
+ObfSymbolsEx.exe server.pdb server.sym -fc+CBaseEntity -fm+model -fm-Index
+```
 
-# Find specific function
-Get-Content symbols.sym | Where-Object { $_ -match "MyFunction" }
+### Downloading symbols
 
-# Count symbols by type
-(Get-Content symbols.sym | Where-Object { $_ -match "^PUBLIC" }).Count
-(Get-Content symbols.sym | Where-Object { $_ -match "^PRIVATE" }).Count
+For a PE input (see above), ObfSymbolsEx first checks for an already-present
+PDB next to `ObfSymbolsEx.exe` and next to the input file itself, and — only
+if its GUID actually matches the binary's own embedded debug info — uses it
+directly, no network involved. Otherwise it tries to download the matching
+PDB from a symbol server, printing each server URL it tries (and whether
+that attempt succeeded, failed, or was skipped) as it goes; only if none of
+them have the file does it fall back to letting DIA locate the PDB on its
+own (same directory as the binary, local symbol cache, ...). A downloaded
+PDB is saved next to `ObfSymbolsEx.exe` itself, where it will be found and
+reused by later runs the same way.
+
+| Switch | Meaning |
+|---|---|
+| `-srv=URL` | Symbol server to download from |
+
+Without `-srv=`, every `srv*`/`symsrv*` entry in the `_NT_SYMBOL_PATH`
+environment variable is tried first — see [the symbol path
+format](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/symbol-path),
+e.g. `srv*C:\MyServerSymbols*https://msdl.microsoft.com/download/symbols` —
+then the default public Microsoft symbol server,
+`https://msdl.microsoft.com/download/symbols`.
+
+```powershell
+ObfSymbolsEx.exe explorer.exe explorer.sym -srv=https://msdl.microsoft.com/download/symbols
 ```
 
 ### Batch Processing

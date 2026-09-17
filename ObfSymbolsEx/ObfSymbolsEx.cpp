@@ -4,6 +4,8 @@
 #include "PdbSymbolExtractor.h"
 #include "CommandLineParser.h"
 #include "SymbolFilter.h"
+#include "PdbSymbolDownloader.h"
+#include "Version.h"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -306,6 +308,68 @@ bool WriteObfuscatedSymbolsToFile(const std::string& outputPath, const std::vect
     return true;
 }
 
+// Returns the bare, unqualified name from a possibly-namespace/class-
+// qualified symbol name, e.g. "vgui::TreeView::SetLabelEditingAllowed" ->
+// "SetLabelEditingAllowed". A free function's name has no "::" in it at
+// all, so it's already its own bare name.
+static std::string UnqualifiedName(const std::string& qualifiedName) {
+    size_t lastSeparator = qualifiedName.rfind("::");
+    return (lastSeparator == std::string::npos) ? qualifiedName : qualifiedName.substr(lastSeparator + 2);
+}
+
+// Writes a simplified report -- just "Name(Signature) -> ReturnType", one
+// line per symbol, nothing else -- to `outputPath`. Feeds both
+// server_simple_sort_by_class.sym and server_simple_sort_by_name.sym; the
+// two differ only in sort order, selected by `sortByMethodName`:
+//   false: alphabetical order of the fully-qualified name. Since a class's
+//          methods all share its "Namespace::Class::" prefix, this both
+//          groups and orders by class -- server_simple_sort_by_class.sym.
+//   true:  alphabetical order of just the bare method name (see
+//          UnqualifiedName()), ignoring whatever class/namespace it
+//          belongs to -- server_simple_sort_by_name.sym.
+//
+// Filtering: -fc tests symbol.className, same as WriteSymbolsToFile(). -fm
+// tests this report's own line text (name+signature+return type is all
+// there is here, so unlike WriteObfuscatedSymbolsToFile() there's no
+// sparser sibling text to worry about keeping in sync).
+bool WriteSimpleReportToFile(const std::string& outputPath, const std::vector<FunctionSymbol>& symbols,
+                             const SymbolFilter& filter, bool sortByMethodName) {
+    struct SimpleLine {
+        std::string sortKey;
+        std::string text;
+    };
+    std::vector<SimpleLine> lines;
+    lines.reserve(symbols.size());
+
+    for (const auto& symbol : symbols) {
+        if (!filter.ShouldKeepClass(symbol.className)) {
+            continue;
+        }
+
+        std::string name = WStringToString(symbol.name);
+        std::string text = name + WStringToString(symbol.signature) + " -> " + WStringToString(symbol.returnType);
+        if (!filter.ShouldKeepLine(StringToWString(text))) {
+            continue;
+        }
+
+        lines.push_back({ sortByMethodName ? UnqualifiedName(name) : name, std::move(text) });
+    }
+
+    std::stable_sort(lines.begin(), lines.end(), [](const SimpleLine& a, const SimpleLine& b) {
+        return a.sortKey < b.sortKey;
+    });
+
+    std::ofstream outFile(outputPath);
+    if (!outFile.is_open()) {
+        std::cerr << "Failed to open output file: " << outputPath << std::endl;
+        return false;
+    }
+    for (const auto& line : lines) {
+        outFile << line.text << std::endl;
+    }
+    outFile.close();
+    return true;
+}
 
 // Write a reconstructed VTable map. DIA does not necessarily emit a
 // SymTagVTable child for every C++ class that has virtual methods. Therefore
@@ -834,7 +898,7 @@ bool WriteVTableInheritanceToFile(const std::string& outputPath,
 }
 
 int wmain(int argc, wchar_t* argv[]) {
-    std::wcout << L"ObfSymbolsEx - PDB Function Symbol Extractor" << std::endl;
+    std::wcout << L"ObfSymbolsEx v" OBFSYMBOLSEX_VERSION L" - PDB Function Symbol Extractor" << std::endl;
     std::wcout << L"=============================================" << std::endl << std::endl;
 
     CommandLineOptions options;
@@ -854,6 +918,22 @@ int wmain(int argc, wchar_t* argv[]) {
         std::wcout << L"Filters: " << options.filter.Describe() << std::endl;
     }
     std::wcout << std::endl;
+
+    // For a PE input (.exe/.dll/.ocx/.sys/... -- detected by magic), always
+    // try to download its matching PDB from a symbol server first. Only
+    // when that fails do we fall back to PdbSymbolExtractor's own
+    // loadDataForExe(), which asks DIA to locate the PDB itself.
+    if (PdbSymbolDownloader::IsPeFile(pdbPath)) {
+        std::wcout << L"Looking up symbols for this PE file on a symbol server..." << std::endl;
+        std::wstring downloadedPdbPath;
+        std::wstring downloadError;
+        if (PdbSymbolDownloader::TryDownloadPdb(pdbPath, options.symbolServer, downloadedPdbPath, downloadError)) {
+            pdbPath = downloadedPdbPath;
+        } else {
+            std::wcout << L"Symbol server lookup failed (" << downloadError << L"); falling back to loadDataForExe." << std::endl;
+        }
+        std::wcout << std::endl;
+    }
 
     // Create extractor (DIA SDK is initialized in constructor)
     PdbSymbolExtractor extractor;
@@ -906,6 +986,37 @@ int wmain(int argc, wchar_t* argv[]) {
 
     std::wcout << L"Successfully wrote mapping file to " << argv[2] << std::endl;
     std::wcout << L"Successfully wrote obfuscated file to " << std::wstring(obfuscatedPath.begin(), obfuscatedPath.end()) << std::endl;
+
+    // Simplified "Name(Signature) -> ReturnType" reports, sorted by class
+    // and by bare method name respectively.
+    std::string simpleSortByClassPath = outputPath;
+    size_t simpleSortByClassDotPos = simpleSortByClassPath.rfind('.');
+    if (simpleSortByClassDotPos != std::string::npos) {
+        simpleSortByClassPath.insert(simpleSortByClassDotPos, "_simple_sort_by_class");
+    } else {
+        simpleSortByClassPath += "_simple_sort_by_class";
+    }
+
+    if (!WriteSimpleReportToFile(simpleSortByClassPath, symbols, options.filter, false)) {
+        std::wcerr << L"Failed to write simple sort-by-class report" << std::endl;
+        return 1;
+    }
+
+    std::string simpleSortByNamePath = outputPath;
+    size_t simpleSortByNameDotPos = simpleSortByNamePath.rfind('.');
+    if (simpleSortByNameDotPos != std::string::npos) {
+        simpleSortByNamePath.insert(simpleSortByNameDotPos, "_simple_sort_by_name");
+    } else {
+        simpleSortByNamePath += "_simple_sort_by_name";
+    }
+
+    if (!WriteSimpleReportToFile(simpleSortByNamePath, symbols, options.filter, true)) {
+        std::wcerr << L"Failed to write simple sort-by-name report" << std::endl;
+        return 1;
+    }
+
+    std::wcout << L"Successfully wrote simple sort-by-class file to " << std::wstring(simpleSortByClassPath.begin(), simpleSortByClassPath.end()) << std::endl;
+    std::wcout << L"Successfully wrote simple sort-by-name file to " << std::wstring(simpleSortByNamePath.begin(), simpleSortByNamePath.end()) << std::endl;
 
     // Generate a reconstructed VTable filename.
     std::string vtablePath = outputPath;

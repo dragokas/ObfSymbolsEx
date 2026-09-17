@@ -47,6 +47,8 @@ bool MatchFilterPrefix(const std::wstring& arg, bool& isClassFilter, FilterMode&
     return false;
 }
 
+const wchar_t kSymbolServerPrefix[] = L"-srv=";
+
 } // namespace
 
 bool CommandLineParser::Parse(int argc, wchar_t* argv[], CommandLineOptions& options, std::wstring& errorMessage) {
@@ -58,9 +60,21 @@ bool CommandLineParser::Parse(int argc, wchar_t* argv[], CommandLineOptions& opt
     options.inputPath = argv[1];
     options.outputPath = argv[2];
     options.filter = SymbolFilter();
+    options.symbolServer.clear();
 
     for (int i = 3; i < argc; ++i) {
         std::wstring arg = argv[i];
+
+        size_t srvPrefixLen = wcslen(kSymbolServerPrefix);
+        if (arg.compare(0, srvPrefixLen, kSymbolServerPrefix) == 0) {
+            std::wstring server = StripQuotes(arg.substr(srvPrefixLen));
+            if (server.empty()) {
+                errorMessage = L"-srv= is missing its URL/path: " + arg;
+                return false;
+            }
+            options.symbolServer = server;
+            continue;
+        }
 
         bool isClassFilter = false;
         FilterMode mode = FilterMode::Include;
@@ -88,9 +102,9 @@ bool CommandLineParser::Parse(int argc, wchar_t* argv[], CommandLineOptions& opt
 }
 
 void CommandLineParser::PrintUsage() {
-    std::wcout << L"Usage: ObfSymbolsEx.exe <input.pdb|input.exe|input.dll> <output.sym> [filters...]" << std::endl;
+    std::wcout << L"Usage: ObfSymbolsEx.exe <input.pdb|PE file> <output.sym> [filters...] [-srv=URL]" << std::endl;
     std::wcout << L"Example: ObfSymbolsEx.exe myapp.pdb symbols.sym" << std::endl;
-    std::wcout << L"         ObfSymbolsEx.exe myapp.exe symbols.sym  (DIA locates the matching PDB itself)" << std::endl;
+    std::wcout << L"         ObfSymbolsEx.exe myapp.exe symbols.sym  (any PE image: .exe/.dll/.ocx/.sys/...)" << std::endl;
     std::wcout << std::endl;
     std::wcout << L"Optional report filters (repeatable, any order, always case-insensitive substring checks):" << std::endl;
     std::wcout << L"  -fc+WORD   only include classes whose name contains WORD" << std::endl;
@@ -99,4 +113,11 @@ void CommandLineParser::PrintUsage() {
     std::wcout << L"  -fm-WORD   exclude lines that contain WORD" << std::endl;
     std::wcout << L"WORD may be quoted, e.g. -fc+\"My Class\". Multiple +rules OR together; so do multiple -rules." << std::endl;
     std::wcout << L"Example: ObfSymbolsEx.exe server.pdb server.sym -fc+CBaseEntity -fm+model -fm-Index" << std::endl;
+    std::wcout << std::endl;
+    std::wcout << L"Optional symbol server override, for a PE input file whose PDB isn't next to it:" << std::endl;
+    std::wcout << L"  -srv=URL   e.g. -srv=https://msdl.microsoft.com/download/symbols" << std::endl;
+    std::wcout << L"Without -srv=, the _NT_SYMBOL_PATH environment variable's srv*/symsrv* entries are" << std::endl;
+    std::wcout << L"tried (e.g. srv*C:\\MyServerSymbols*https://msdl.microsoft.com/download/symbols), then" << std::endl;
+    std::wcout << L"the default Microsoft public symbol server. The downloaded PDB is saved next to" << std::endl;
+    std::wcout << L"ObfSymbolsEx.exe; this is always tried first, before falling back to DIA's own PDB search." << std::endl;
 }

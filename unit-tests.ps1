@@ -1,8 +1,9 @@
 # Unit-test suite for every feature ObfSymbolsEx adds on top of the original
 # ObfSymbols: VTable dump, return types, calling convention, complex/basic
 # type detection, source file+line, ICF fixes, destructor/pure-virtual
-# override resolution, direct .exe/.dll input, column-aligned output, and
-# the -fc/-fm report filtering switches.
+# override resolution, direct .exe/.dll input, column-aligned output, the
+# -fc/-fm report filtering switches, and the simplified sort-by-class/
+# sort-by-name reports.
 #
 # Unlike validate.ps1 (a build-and-eyeball smoke test), every check here
 # asserts an exact field value extracted from real .sym output and the
@@ -423,6 +424,91 @@ Assert-True ($quoteDiff -eq $null) '-fc+"Rectangle" (quoted WORD) behaves identi
 $outBadArg = Join-Path $resultsDir "filter_bad_arg"
 & $obfExe $testAppPdb "$outBadArg.sym" -bogus+X | Out-Null
 Assert-True ($LASTEXITCODE -ne 0) "An unrecognized filter switch fails with a non-zero exit code"
+
+# ============================================================
+# L. Simple reports (_simple_sort_by_class / _simple_sort_by_name)
+# ============================================================
+Section "Simple reports (_simple_sort_by_class / _simple_sort_by_name)"
+
+function Get-SimpleBareName {
+    param([string]$Line)
+    $qualified = $Line.Substring(0, $Line.IndexOf('('))
+    $idx = $qualified.LastIndexOf('::')
+    if ($idx -ge 0) { return $qualified.Substring($idx + 2) }
+    return $qualified
+}
+
+$simpleByClassLines = Get-Content "$outApp`_simple_sort_by_class.sym"
+$simpleByNameLines = Get-Content "$outApp`_simple_sort_by_name.sym"
+
+Assert-Equal $simpleByClassLines.Count $appLines.Count `
+    "_simple_sort_by_class.sym has exactly one line per server.sym symbol"
+Assert-Equal $simpleByNameLines.Count $appLines.Count `
+    "_simple_sort_by_name.sym has exactly one line per server.sym symbol"
+
+# Format is just "Name(Signature) -> ReturnType" -- none of server.sym's
+# other fields (visibility, address, SIZE, VTABLE_*, SOURCE_FILE, ...)
+# survive.
+$rectAreaSimple = $simpleByClassLines | Where-Object { $_ -match '^Rectangle::Area\(\) -> ' }
+Assert-True ($rectAreaSimple.Count -eq 1) "Rectangle::Area appears as a plain 'Name() -> ReturnType' line"
+if ($rectAreaSimple.Count -eq 1) {
+    Assert-True ($rectAreaSimple[0] -notmatch '^(PUBLIC|PRIVATE)') "Simple line omits PUBLIC/PRIVATE"
+    Assert-True ($rectAreaSimple[0] -notmatch 'VTABLE_') "Simple line omits VTABLE_* fields"
+    Assert-True ($rectAreaSimple[0] -notmatch '0x[0-9A-Fa-f]+ SIZE=') "Simple line omits address/SIZE"
+}
+
+# _simple_sort_by_class.sym: plain (ordinal) alphabetical order of the
+# fully-qualified name -- a class's own methods (sharing its "Class::"
+# prefix) end up contiguous, and classes themselves fall in alphabetical
+# order too.
+$namesByClass = $simpleByClassLines | ForEach-Object { $_.Substring(0, $_.IndexOf('(')) }
+$namesByClassSorted = [string[]]$namesByClass.Clone()
+[array]::Sort($namesByClassSorted, [StringComparer]::Ordinal)
+Assert-True ((($namesByClass -join "`n")) -ceq ($namesByClassSorted -join "`n")) `
+    "_simple_sort_by_class.sym is sorted by the fully-qualified name (ordinal)"
+
+# _simple_sort_by_name.sym: ordinal alphabetical order of just the bare
+# method name, ignoring whatever class/namespace it belongs to.
+$bareNames = $simpleByNameLines | ForEach-Object { Get-SimpleBareName $_ }
+$bareNamesSorted = [string[]]$bareNames.Clone()
+[array]::Sort($bareNamesSorted, [StringComparer]::Ordinal)
+Assert-True (($bareNames -join "`n") -ceq ($bareNamesSorted -join "`n")) `
+    "_simple_sort_by_name.sym is sorted by the bare method name (ordinal), ignoring class/namespace"
+
+# Rectangle::Area and Circle::Area (the pure-virtual override pair used
+# elsewhere in this suite) share the bare name "Area" but belong to
+# different classes -- sort_by_name should put them next to each other;
+# sort_by_class should not (they fall under their own separate classes).
+$areaIndicesByName = @()
+for ($i = 0; $i -lt $simpleByNameLines.Count; $i++) {
+    if ($simpleByNameLines[$i] -match '^(Rectangle|Circle)::Area\(\) -> ') { $areaIndicesByName += $i }
+}
+Assert-True ($areaIndicesByName.Count -eq 2 -and ($areaIndicesByName[1] - $areaIndicesByName[0]) -eq 1) `
+    "_simple_sort_by_name.sym places Circle::Area and Rectangle::Area next to each other (same bare name, different classes)"
+
+$areaIndicesByClass = @()
+for ($i = 0; $i -lt $simpleByClassLines.Count; $i++) {
+    if ($simpleByClassLines[$i] -match '^(Rectangle|Circle)::Area\(\) -> ') { $areaIndicesByClass += $i }
+}
+Assert-True ($areaIndicesByClass.Count -eq 2 -and ($areaIndicesByClass[1] - $areaIndicesByClass[0]) -ne 1) `
+    "_simple_sort_by_class.sym does NOT place them next to each other (grouped by class instead)"
+
+# -fc/-fm filter both simple reports the same way they filter server.sym.
+$outSimpleFc = Join-Path $resultsDir "simple_filter_fc"
+& $obfExe $testAppPdb "$outSimpleFc.sym" -fc+Rectangle | Out-Null
+$simpleFcByClass = Get-Content "$outSimpleFc`_simple_sort_by_class.sym"
+$simpleFcByName = Get-Content "$outSimpleFc`_simple_sort_by_name.sym"
+Assert-True (($simpleFcByClass | Where-Object { $_ -notmatch '^Rectangle::' }).Count -eq 0) `
+    "-fc+Rectangle keeps only Rectangle's lines in _simple_sort_by_class.sym"
+Assert-True (($simpleFcByName | Where-Object { $_ -notmatch '^Rectangle::' }).Count -eq 0) `
+    "-fc+Rectangle keeps only Rectangle's lines in _simple_sort_by_name.sym"
+
+$outSimpleFm = Join-Path $resultsDir "simple_filter_fm"
+& $obfExe $testAppPdb "$outSimpleFm.sym" -fm+Area | Out-Null
+$simpleFmByClass = Get-Content "$outSimpleFm`_simple_sort_by_class.sym"
+Assert-True (($simpleFmByClass | Where-Object { $_ -notmatch 'Area' }).Count -eq 0) `
+    "-fm+Area keeps only Area-containing lines in _simple_sort_by_class.sym"
+Assert-True ($simpleFmByClass.Count -gt 0) "-fm+Area still keeps at least one line"
 
 # ============================================================
 # Summary
